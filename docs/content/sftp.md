@@ -244,6 +244,100 @@ And then at the end of the session
 
 These commands can be used in scripts of course.
 
+### Windows OpenSSH server
+
+Windows 10, Server 2019, and later can run a SSH server that is
+a port of OpenSSH. See official
+[installation guide](https://docs.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
+
+Some functionality of the SFTP backend, e.g. [checksum](#checksum) and
+[about command](#about-command), relies on remote shell access and
+possibility to execute commands. The commands may be different on
+different type of shells, and e.g. quoting/escaping of file path arguments
+containing special characters may also be different. Rclone therefore
+needs to know what type of shell it is, and if shell access is available at all.
+
+On any Unix system a basic Unix shell can be assumed, without further
+distinction. On a Windows server this is different: A ssh server on
+Windows can also be using a Unix type shell, e.g. Cygwin bash, but
+the default is to use Windows Command Prompt (cmd.exe), and PowerShell
+is a recommended alternative. Using PowerShell has the advantage
+that rclone is able to use built-in shell commands e.g. to
+calculate [checksum](#checksum).
+
+Rclone tries to auto-detect what type of shell is used on the server,
+first time you access the SFTP remote. If a remote shell session is
+successfully created, it will look for indications that it is CMD or
+PowerShell, with fall-back to Unix if not something else is detected.
+If unable to even create a remote shell session, then shell command
+execution will be disabled entirely. The result is stored in the SFTP
+remote configuration, in option `shell_type`, so that the auto-detection
+only have to be performed once. If you manually set a value for this
+option before first run, the auto-detection will be skipped, and if
+you set a different value later this will override any existing.
+Value `none` can be set to avoid any attempts at executing shell
+commands, e.g. if this is not allowed on the server.
+
+When the server is [rclone serve sftp](/commands/rclone_serve_sftp/),
+the rclone SFTP remote will detect this as a Unix type shell - even
+if it is running on Windows. This server does not actually have a shell,
+but it accepts input commands matching the specific ones that the
+SFTP backend relies on for Unix shells, e.g. `md5sum` and `df`. Also
+it handles the string escape rules used for Unix shell. Treating it
+as a Unix type shell from a SFTP remote will therefore always be
+correct and support all features.
+
+### Checksum
+
+SFTP does not natively support checksums (file hash), but rclone
+is able to use checksumming if the same login has shell access,
+and can execute remote commands. If there is a command that can
+calculate compatible checksums on the remote system, Rclone can
+then be configured to execute this whenever a checksum is needed,
+and read back the results. Currently MD5 and SHA-1 are supported.
+
+Normally this requires an external utility being available on
+the server. By default rclone will try commands `md5sum`, `md5`
+and `rclone md5sum` for MD5 checksums, and the first one found usable
+will be picked. Same with `sha1sum`, `sha1` and `rclone sha1sum`
+commands for SHA-1 checksums. These utilities normally need to
+be in the remote's PATH to be found.
+
+In some cases the shell itself is capable of calculating checksums.
+PowerShell is an example of such a shell. If rclone detects that the
+remote shell is PowerShell, which means it most probably is a
+[Windows OpenSSH server](#windows-openssh-server), rclone will
+use a predefined script block to produce the checksums when no
+external checksum commands are found. This assumes PowerShell
+version 4.0 or newer.
+
+The options `md5sum_command` and `sha1_command` can be used to customize
+the command to be executed for calculation of checksums. You can for
+example set a specific path to where md5sum and sha1sum executables
+are located, or use them to specify some other tools that print checksums
+in compatible format. The value can include command-line arguments,
+or even shell script blocks as with PowerShell. Rclone has subcommands
+[md5sum](/commands/rclone_md5sum/) and [sha1sum](/commands/rclone_sha1sum/)
+that use compatible format, which means if you have an rclone executable
+on the server it can be used. As mentioned above, they will be automatically
+picked up if found in PATH, but if not you can set something like
+`/path/to/rclone md5sum` as the value of option `md5sum_command` to
+make sure a specific executable is used.
+
+Remote checksumming is recommended and enabled by default. First time
+rclone is using a SFTP remote, if options `md5sum_command` or `sha1_command`
+are not set, it will check if any of the default commands for each of them,
+as described above, can be used. The result will be saved in the remote
+configuration, so next time it will use the same. Value `none`
+will be set if none of the default commands could be used for a specific
+algorithm, and this algorithm will not be supported by the remote.
+
+Disabling the checksumming may be required if you are connecting to SFTP servers
+which are not under your control, and to which the execution of remote shell
+commands is prohibited.  Set the configuration option `disable_hashcheck`
+to `true` to disable checksumming entirely, or set `shell_type` to `none`
+to disable all functionality based on remote shell command execution.
+
 ### Modified time
 
 Modified times are stored on the server to 1 second precision.
@@ -254,6 +348,20 @@ Some SFTP servers disable setting/modifying the file modification time after
 upload (for example, certain configurations of ProFTPd with mod_sftp). If you
 are using one of these servers, you can set the option `set_modtime = false` in
 your RClone backend configuration to disable this behaviour.
+
+### About command
+
+SFTP supports the [about](/commands/rclone_about/) command if the
+same login has access to a Unix shell, where the `df` command is
+available (e.g. in the remote's PATH). `about` will return the
+total space, free space, and used space on the remote for the disk
+of the specified path on the remote or, if not set, the disk of
+the root on the remote. `about` will fail if it does not have
+shell access or if `df` is not found.
+
+If the server shell is PowerShell, probably with a
+[Windows OpenSSH server](#windows-openssh-server), rclone supports
+`about` using a built-in shell command.
 
 {{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/sftp/sftp.go then run make backenddocs" >}}
 ### Standard options
@@ -637,25 +745,9 @@ Properties:
 
 ## Limitations
 
-SFTP supports checksums if the same login has shell access and `md5sum`
-or `sha1sum` as well as `echo` are in the remote's PATH.
-This remote checksumming (file hashing) is recommended and enabled by default.
-Disabling the checksumming may be required if you are connecting to SFTP servers
-which are not under your control, and to which the execution of remote commands
-is prohibited.  Set the configuration option `disable_hashcheck` to `true` to
-disable checksumming.
-
-SFTP also supports `about` if the same login has shell
-access and `df` are in the remote's PATH. `about` will
-return the total space, free space, and used space on the remote
-for the disk of the specified path on the remote or, if not set,
-the disk of the root on the remote.
-`about` will fail if it does not have shell
-access or if `df` is not in the remote's PATH.
-
-Note that some SFTP servers (e.g. Synology) the paths are different for
-SSH and SFTP so the hashes can't be calculated properly.  For them
-using `disable_hashcheck` is a good idea.
+On some SFTP servers (e.g. Synology) the paths are different
+for SSH and SFTP so the hashes can't be calculated properly.
+For them using `disable_hashcheck` is a good idea.
 
 The only ssh agent supported under Windows is Putty's pageant.
 
@@ -670,10 +762,9 @@ SFTP isn't supported under plan9 until [this
 issue](https://github.com/pkg/sftp/issues/156) is fixed.
 
 Note that since SFTP isn't HTTP based the following flags don't work
-with it: `--dump-headers`, `--dump-bodies`, `--dump-auth`
+with it: `--dump-headers`, `--dump-bodies`, `--dump-auth`.
 
 Note that `--timeout` and `--contimeout` are both supported.
-
 
 ## rsync.net {#rsync-net}
 

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestShellEscape(t *testing.T) {
+func TestUnixShellEscape(t *testing.T) {
 	for i, test := range []struct {
 		unescaped, escaped string
 	}{
@@ -20,7 +20,7 @@ func TestShellEscape(t *testing.T) {
 		{"/test/\n", "/test/'\n'"},
 		{":\"'", ":\\\"\\'"},
 	} {
-		got := shellEscape(test.unescaped)
+		got := unixShellEscape(test.unescaped)
 		assert.Equal(t, test.escaped, got, fmt.Sprintf("Test %d unescaped = %q", i, test.unescaped))
 	}
 }
