@@ -1328,7 +1328,7 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 	// (OpenSSH implements it on using syscall.Statfs on Linux and API function GetDiskFreeSpace on Windows)
 	c, err := f.getSftpConnection(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("About: %w", err)
+		return nil, err
 	}
 	var vfsStats *sftp.StatVFS
 	if _, found := c.sftpClient.HasExtension("statvfs@openssh.com"); found {
@@ -1351,6 +1351,9 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 			Free:  fs.NewUsageValue(int64(free)),
 		}, nil
 	} else if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 		fs.Debugf(f, "Failed to retrieve VFS statistics, trying shell command instead: %v", err)
 	} else {
 		fs.Debugf(f, "Server does not have the VFS statistics extension, trying shell command instead")
@@ -1359,14 +1362,17 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 	// Fall back to shell command method if possible
 	if f.shellType == shellTypeNotSupported || f.shellType == "cmd" {
 		fs.Debugf(f, "About shell command is not available for shell type %q (set option shell_type to override)", f.shellType)
-		return nil, fmt.Errorf("your remote with shell type %q does not support About", f.shellType)
+		return nil, fmt.Errorf("not supported with shell type %q", f.shellType)
 	}
 	aboutShellPath := f.remoteShellPath("")
 	if aboutShellPath == "" {
 		aboutShellPath = "/"
 	}
 	fs.Debugf(f, "About path %q", aboutShellPath)
-	aboutShellPathArg := f.quoteOrEscapeShellPath(aboutShellPath)
+	aboutShellPathArg, err := f.quoteOrEscapeShellPath(aboutShellPath)
+	if err != nil {
+		return nil, err
+	}
 	// PowerShell
 	if f.shellType == "powershell" {
 		shellCmd := "Get-Item " + aboutShellPathArg + " -ErrorAction Stop|Select-Object -First 1 -ExpandProperty PSDrive|ForEach-Object{\"$($_.Used) $($_.Free)\"}"
@@ -1374,7 +1380,7 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 		stdout, err := f.run(ctx, shellCmd)
 		if err != nil {
 			fs.Debugf(f, "About shell command for shell type %q failed (set option shell_type to override): %v", f.shellType, err)
-			return nil, fmt.Errorf("your remote may not support About: %w", err)
+			return nil, fmt.Errorf("powershell command failed: %w", err)
 		}
 		split := strings.Fields(string(stdout))
 		usage := &fs.Usage{}
@@ -1465,7 +1471,10 @@ func (o *Object) Hash(ctx context.Context, r hash.Type) (string, error) {
 		return "", hash.ErrUnsupported
 	}
 
-	shellPathArg := o.fs.quoteOrEscapeShellPath(o.shellPath())
+	shellPathArg, err := o.fs.quoteOrEscapeShellPath(o.shellPath())
+	if err != nil {
+		return "", fmt.Errorf("failed to calculate %v hash: %w", r, err)
+	}
 	outBytes, err := o.fs.run(ctx, hashCmd+" "+shellPathArg)
 	if err != nil {
 		return "", fmt.Errorf("failed to calculate %v hash: %w", r, err)
@@ -1480,24 +1489,28 @@ func (o *Object) Hash(ctx context.Context, r hash.Type) (string, error) {
 	return hashString, nil
 }
 
-// Escape a string s.t. it cannot cause unintended behavior
-// when sending it to a Unix shell.
-func unixShellEscape(str string) string {
-	safe := unixShellEscapeRegex.ReplaceAllString(str, `\$0`)
-	return strings.Replace(safe, "\n", "'\n'", -1)
+// quoteOrEscapeShellPath makes path a valid string argument in configured shell
+// and also ensures it cannot cause unintended behavior.
+func quoteOrEscapeShellPath(shellType string, shellPath string) (string, error) {
+	// PowerShell
+	if shellType == "powershell" {
+		return "'" + strings.Replace(shellPath, "'", "''", -1) + "'", nil
+	}
+	// Windows Command Prompt
+	if shellType == "cmd" {
+		if strings.Contains(shellPath, "\"") {
+			return "", fmt.Errorf("path is not valid in shell type %s: %s", shellType, shellPath)
+		}
+		return "\"" + shellPath + "\"", nil
+	}
+	// Unix shell
+	safe := unixShellEscapeRegex.ReplaceAllString(shellPath, `\$0`)
+	return strings.Replace(safe, "\n", "'\n'", -1), nil
 }
 
 // quoteOrEscapeShellPath makes path a valid string argument in configured shell
-func (f *Fs) quoteOrEscapeShellPath(shellPath string) string {
-	if f.shellType == "powershell" {
-		return "'" + strings.Replace(shellPath, "'", "''", -1) + "'"
-	}
-	if f.shellType == "cmd" {
-		// By assuming str is a windows filepath we can simply wrap in double quotes,
-		// no characters that would need escaping are legal in paths.
-		return "\"" + shellPath + "\""
-	}
-	return unixShellEscape(shellPath)
+func (f *Fs) quoteOrEscapeShellPath(shellPath string) (string, error) {
+	return quoteOrEscapeShellPath(f.shellType, shellPath)
 }
 
 // remotePath returns the native SFTP path of the file or directory at the remote given

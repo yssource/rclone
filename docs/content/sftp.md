@@ -28,6 +28,9 @@ Note that some SFTP servers will need the leading / - Synology is a
 good example of this. rsync.net, on the other hand, requires users to
 OMIT the leading /.
 
+Note that by default rclone will try to execute shell commands on
+the server, see [shell access considerations](#shell-access-considerations).
+
 ## Configuration
 
 Here is an example of making an SFTP configuration.  First run
@@ -244,11 +247,7 @@ And then at the end of the session
 
 These commands can be used in scripts of course.
 
-### Windows OpenSSH server
-
-Windows 10, Server 2019, and later can run a SSH server that is
-a port of OpenSSH. See official
-[installation guide](https://docs.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
+### Shell access
 
 Some functionality of the SFTP backend relies on remote shell access,
 and the possibility to execute commands. This includes [checksum](#checksum),
@@ -258,13 +257,13 @@ quoting/escaping of file path arguments containing special characters may
 be different. Rclone therefore needs to know what type of shell it is,
 and if shell access is available at all.
 
-On any Unix system a basic Unix shell can be assumed, without further
-distinction. On a Windows server this is different: A ssh server on
-Windows can also be using a Unix type shell, e.g. Cygwin bash, but
-the default is to use Windows Command Prompt (cmd.exe), and PowerShell
-is a recommended alternative. Using PowerShell has the advantage
-that rclone is able to use built-in language features, e.g. to
-calculate [checksum](#checksum).
+Most servers run on some version of Unix, and then a basic Unix shell can
+be assumed, without further distinction. Windows 10, Server 2019, and later
+can also run a SSH server, which is a port of OpenSSH (see official
+[installation guide](https://docs.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)). On a Windows server the shell handling is different: Although it can also
+be set up to use a Unix type shell, e.g. Cygwin bash, the default is to
+use Windows Command Prompt (cmd.exe), and PowerShell is a recommended
+alternative. All of these have bahave differently, which rclone must handle.
 
 Rclone tries to auto-detect what type of shell is used on the server,
 first time you access the SFTP remote. If a remote shell session is
@@ -288,6 +287,25 @@ it handles the string escape rules used for Unix shell. Treating it
 as a Unix type shell from a SFTP remote will therefore always be
 correct, and support all features.
 
+#### Shell access considerations
+
+The shell type auto-detection logic, described above, means that
+by default rclone will try to run a shell command the first time
+a new sftp remote is accessed. If you configure a sftp remote
+without a config file, e.g. an [on the fly](/docs/#backend-path-to-dir])
+remote, rclone will have nowhere to store the result, and it
+will re-run the command on every access. To avoid this you should
+explicitely set the `shell_type` option to the correct value,
+or to `none` if you want to prevent rclone from executing any
+remote shell commands.
+
+It is also important to note that, since the shell type decides
+how quoting and escaping of file paths used as command-line arguments
+are performed, configuring the wrong shell type may leave you exposed
+to command injection exploits. Make sure to confirm the auto-detected
+shell type, or explicitely set the shell type you know is correct,
+or disable shell access until you know.
+
 ### Checksum
 
 SFTP does not natively support checksums (file hash), but rclone
@@ -307,10 +325,10 @@ be in the remote's PATH to be found.
 In some cases the shell itself is capable of calculating checksums.
 PowerShell is an example of such a shell. If rclone detects that the
 remote shell is PowerShell, which means it most probably is a
-[Windows OpenSSH server](#windows-openssh-server), rclone will
-use a predefined script block to produce the checksums when no
-external checksum commands are found. This assumes PowerShell
-version 4.0 or newer.
+Windows OpenSSH server, rclone will use a predefined script block
+to produce the checksums when no external checksum commands are found
+(see [shell access](#shell-access)). This assumes PowerShell version
+4.0 or newer.
 
 The options `md5sum_command` and `sha1_command` can be used to customize
 the command to be executed for calculation of checksums. You can for
@@ -362,8 +380,8 @@ VFS statistics extension, which is normally the case with OpenSSH instances,
 it will be used. If not, but the same login has access to a Unix shell,
 where the `df` command is available (e.g. in the remote's PATH), then
 this will be used instead. If the server shell is PowerShell, probably
-with a [Windows OpenSSH server](#windows-openssh-server), rclone will
-use a built-in shell command. If none of the above is applicable,
+with a Windows OpenSSH server, rclone will use a built-in shell command
+(see [shell access](#shell-access)). If none of the above is applicable,
 `about` will fail.
 
 {{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/sftp/sftp.go then run make backenddocs" >}}
